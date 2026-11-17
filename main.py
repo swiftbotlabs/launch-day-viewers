@@ -9,7 +9,7 @@ import math
 import os
 import re
 import sys
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 GTA6_TWITCH_ID = "1867279146"
 MIN_ANALOGS = 5  # with fewer usable comparables the flat baseline is the safer forecast
@@ -29,6 +29,11 @@ PARAMS = {
     "kind_mismatch": 0.05,  # weight factor when both types are known and differ (unknown type: factor 1)
     "mom_beta": 0.5,  # momentum carry into the first hours
     "mom_tau": 3.0,   # its decay, in hours
+    "min_neff": 0.0,  # temper the weights when fewer effective analogs than this carry the forecast
+    "pool_infl": 0.0,  # share of the pool's variance added per 1/n_eff
+    "dst_align": True,   # align analogs to the case's daylight-saving clock (validated: blend mode)
+    "dst_mode": "blend",
+    "var_own": True,  # spread from the analogs' unshifted days  # "full" shift / "targets" only / "blend" (mean of own and shifted hour)
     "floor": 0.15,    # minimum log spread at hour 2
     "floor_slope": 0.0,  # extra floor per hour ahead
 }
@@ -40,6 +45,21 @@ def parse_time(s):
 
 def hour_offset(t, day_start):
     return int((t - day_start).total_seconds() // 3600)
+
+
+def us_dst(d):
+    """US daylight saving time on date d: second Sunday of March to first Sunday of November."""
+    m = date(d.year, 3, 1)
+    m += timedelta(days=(6 - m.weekday()) % 7 + 7)
+    n = date(d.year, 11, 1)
+    n += timedelta(days=(6 - n.weekday()) % 7)
+    return m <= d < n
+
+
+def dst_shift(case_day, analog_day):
+    """Hours to move an analog's series so its unlocks and local evenings sit on the case's UTC clock: a summer-time
+    launch's midnights (US east 04:00Z, UK 23:00Z) come an hour before a winter one's (05:00Z, 00:00Z)."""
+    return int(us_dst(analog_day)) - int(us_dst(case_day))
 
 
 def clip(x, lo, hi):
@@ -83,10 +103,17 @@ def features(s):
     return {"size": math.log(h1), "mx": mx, "r6": r6, "ch": ch, "mom": mom}
 
 
-def analog_targets(s):
-    """ln(viewers at hour h / hour-1 viewers) for h = 2..24 where the analog has a point."""
+def analog_targets(s, shift=0, mode="full"):
+    """ln(viewers at hour h / hour-1 viewers) for h = 2..24 where the analog has a point. With a timing shift the
+    analog's hour h - shift stands for the case's hour h ("targets"), or the mean of both ("blend")."""
     h1 = max(s[0][0], 1.0)
-    return {h: math.log(max(s[h - 1][0], 1.0) / h1) for h in range(2, 25) if (h - 1) in s}
+    base = {h: math.log(max(s[h - 1][0], 1.0) / h1) for h in range(2, 25) if (h - 1) in s}
+    if not shift:
+        return base
+    moved = {h: math.log(max(s[h - 1 - shift][0], 1.0) / h1) for h in range(2, 25) if (h - 1 - shift) in s}
+    if mode == "targets":
+        return moved
+    return {h: 0.5 * (base[h] + moved[h]) for h in base if h in moved}
 
 
 def unlock_kind(text):
@@ -119,6 +146,31 @@ def weight(fa, fb, p):
     return w
 
 
+def n_eff(ws):
+    sw = sum(ws)
+    s2 = sum(w * w for w in ws)
+    return sw * sw / s2 if s2 > 0 else 0.0
+
+
+def temper(ws, min_neff):
+    """If the weights pile onto fewer than min_neff effective analogs, flatten them as w**alpha (alpha < 1, found by
+    bisection) until they reach it: the ranking is kept, only an extreme concentration is relaxed."""
+    pos = [w for w in ws if w > 0]
+    if min_neff <= 0 or not pos or n_eff(ws) >= min(min_neff, len(pos)):
+        return ws
+    target = min(min_neff, len(pos) - 1e-9)
+    top = max(pos)
+    scaled = [w / top for w in ws]  # in (0, 1]: powers stay finite
+    lo, hi = 0.0, 1.0
+    for _ in range(50):
+        mid = (lo + hi) / 2.0
+        if n_eff([x ** mid if x > 0 else 0.0 for x in scaled]) >= target:
+            lo = mid
+        else:
+            hi = mid
+    return [x ** lo if x > 0 else 0.0 for x in scaled]
+
+
 def weighted_median(pts):
     pts = sorted(pts, key=lambda t: t[1])
     half = sum(w for w, _ in pts) / 2.0
@@ -130,40 +182,68 @@ def weighted_median(pts):
     return pts[-1][1]
 
 
-def forecast_quantiles(target, analogs, p=PARAMS, target_kind=None, analog_kinds=None):
-    """target: series with offsets <= 0; analogs: list of full series. Returns {h: [5 quantiles]}."""
+def forecast_quantiles(target, analogs, p=PARAMS, target_kind=None, analog_kinds=None, shifts=None):
+    """target: series with offsets <= 0; analogs: list of full series; shifts: hours to move each analog by
+    (daylight-saving alignment). Returns {h: [5 quantiles]}."""
+    kinds_in = analog_kinds or [None] * len(analogs)
+    if shifts and p.get("dst_align", True) and p.get("dst_mode", "full") == "full":
+        moved = [{o + sh: v for o, v in a.items()} if sh else a for a, sh in zip(analogs, shifts)]
+        keep = [i for i, a in enumerate(moved) if 0 in a]
+        analogs = [moved[i] for i in keep]
+        kinds_in = [kinds_in[i] for i in keep]
+    analog_kinds = kinds_in
     ft = features(target)
     ft["kind"] = target_kind
     h1 = max(target[0][0], 1.0)
     feats = [features(a) for a in analogs]
     for i, fa in enumerate(feats):
-        fa["kind"] = analog_kinds[i] if analog_kinds else None
+        fa["kind"] = analog_kinds[i]
     if feats and p.get("clamp_size", True):
         # never extrapolate the kernel upward: a case bigger than every analog (GTA VI, likely) is weighted as the
         # largest one, so the group of the largest launches speaks for it rather than the single nearest one.
         # (A lower clamp was tried too: leave-one-out showed it only hurt the smallest launch, so there is none.)
         ft["size"] = min(ft["size"], max(f["size"] for f in feats))
-    prepared = [(weight(ft, fa, p), analog_targets(a), fa["mom"]) for fa, a in zip(feats, analogs)]
+    ws = temper([weight(ft, fa, p) for fa in feats], p.get("min_neff", 0.0))
+    tshift = [0] * len(analogs)
+    if shifts and p.get("dst_align", True) and p.get("dst_mode", "full") != "full":
+        tshift = list(shifts)  # timing only: keep the analog's own hour-1 anchor and features
+    # (weight, targets for the centre (time-aligned), momentum, the analog's own targets for the spread)
+    prepared = [(w, analog_targets(a, sh, p.get("dst_mode", "full")), fa["mom"], analog_targets(a))
+                for w, fa, a, sh in zip(ws, feats, analogs, tshift)]
     # momentum carry: how much faster (or slower) the case moved into hour 1 than its analogs did
-    mpts = [(w, m) for w, _, m in prepared if m is not None and w > 0]
+    mpts = [(w, m) for w, _, m, _ in prepared if m is not None and w > 0]
     dmom = 0.0
     if ft["mom"] is not None and mpts and sum(w for w, _ in mpts) > 1e-300:
         dmom = ft["mom"] - sum(w * m for w, m in mpts) / sum(w for w, _ in mpts)
     out = {}
     for h in range(2, 25):
-        pts = [(w, y[h]) for w, y, _ in prepared if h in y and w > 0]
+        pts = [(w, y[h]) for w, y, _, _ in prepared if h in y and w > 0]
         sw = sum(w for w, _ in pts)
         if sw <= 1e-300:
             mu, var, neff = 0.0, 0.0, 1.0
         else:
             mean = sum(w * y for w, y in pts) / sw
             var = sum(w * (y - mean) ** 2 for w, y in pts) / sw
+            if p.get("var_own", True):
+                # the timing shift corrects the centre only; the spread stays that of the analogs' own days (a
+                # shifted hour 2 is ln(h1/h1) = 0 by construction, which would fake certainty)
+                own = [(w, yo[h]) for w, _, _, yo in prepared if h in yo and w > 0]
+                so = sum(w for w, _ in own)
+                if so > 1e-300:
+                    mo = sum(w * y for w, y in own) / so
+                    var = sum(w * (y - mo) ** 2 for w, y in own) / so
             neff = sw * sw / sum(w * w for w, _ in pts)
             mu = weighted_median(pts) if p["center"] == "median" else mean
             mu = p["shrink"] * mu  # pull toward flat (ratio 1) when analogs are few or noisy
         mu += p["mom_beta"] * math.exp(-(h - 2) / p["mom_tau"]) * dmom
         floor = p["floor"] + p["floor_slope"] * (h - 2)
-        s = math.sqrt(var * (1.0 + 1.0 / neff) + floor * floor)
+        pool = [y[h] for _, y, _, _ in prepared if h in y]
+        pool_var = 0.0
+        if len(pool) > 1:
+            pm = sum(pool) / len(pool)
+            pool_var = sum((y - pm) ** 2 for y in pool) / len(pool)
+        # few effective analogs can agree by chance: add a share of the whole pool's variance, shrinking with n_eff
+        s = math.sqrt(var * (1.0 + 1.0 / neff) + floor * floor + p.get("pool_infl", 0.0) * pool_var / neff)
         ks = (p["k_out"], p["k_in"], 0.0, p["k_in"], p["k_out"])
         out[h] = [h1 * math.exp(mu + s * z * k) for z, k in zip(Z, ks)]
     return out
@@ -176,21 +256,23 @@ def is_launch_analog(c, game_name):
 
 
 def load_analogs(case):
-    """Returns (series list, unlock kinds list) of the comparables usable as release-day analogs."""
+    """Returns (series list, unlock kinds list, release dates list) of the comparables usable as analogs."""
     game_name = (case.get("game") or {}).get("name")
-    res, kinds = [], []
+    res, kinds, days = [], [], []
     for c in case.get("comparables") or []:
         try:  # a malformed comparable is skipped, never fatal
             if not is_launch_analog(c, game_name):
                 continue
-            s = series_from_rows(c.get("hourly") or [], parse_time(c["day_start"]), "from")
+            ds = parse_time(c["day_start"])
+            s = series_from_rows(c.get("hourly") or [], ds, "from")
         except Exception:
             continue
         if 0 not in s or sum(1 for h in range(1, 24) if h in s) < 12:
             continue
         res.append(s)
         kinds.append(unlock_kind(c.get("unlock")))
-    return res, kinds
+        days.append(ds.date())
+    return res, kinds, days
 
 
 def case_kind(case):
@@ -298,10 +380,12 @@ def valid_result(res):
 
 def run_case(case):
     try:
-        analogs, kinds = load_analogs(case)
+        analogs, kinds, days = load_analogs(case)
         if len(analogs) < MIN_ANALOGS:
             raise ValueError("too few usable analogs")
-        q = forecast_quantiles(target_series(case), analogs, PARAMS, case_kind(case), kinds)
+        day = parse_time(case["day_start"]).date()
+        shifts = [dst_shift(day, d) for d in days]
+        q = forecast_quantiles(target_series(case), analogs, PARAMS, case_kind(case), kinds, shifts)
         res = {"hours": [{"hour": h, "q": clean_row(q[h])} for h in range(2, 25)]}
     except Exception:  # never leave a case invalid: fall back to the flat forecast
         res = None

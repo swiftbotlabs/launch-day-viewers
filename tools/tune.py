@@ -42,7 +42,7 @@ def objective(per, which):
 
 
 def tune(L, which="mix", start=None, sweeps=3, log=print):
-    KIND.update({n: k for n, _, k in L})
+    KIND.update({x[0]: x[2] for x in L})
     params = dict(start or validate.main.PARAMS)
     best = objective(validate.loo(L, params), which)
     log("start %.5f" % best)

@@ -55,16 +55,23 @@ def launches(case):
         s = main.series_from_rows(c["hourly"], main.parse_time(c["day_start"]), "from")
         if 0 not in s or sum(1 for h in range(1, 24) if h in s) < 12:
             continue
-        res.append((c["name"], s, main.unlock_kind(c.get("unlock"))))
+        res.append((c["name"], s, main.unlock_kind(c.get("unlock")), main.parse_time(c["day_start"]).date()))
     return res
+
+
+def forecast_held_out(held, others, params):
+    """Forecast launch `held` (name, series, kind, day) cut at hour 1, from `others` as analogs."""
+    name, s, kind, day = held
+    target = {k: v for k, v in s.items() if k <= 0}
+    shifts = [main.dst_shift(day, x[3]) for x in others]
+    return main.forecast_quantiles(target, [x[1] for x in others], params, kind, [x[2] for x in others], shifts)
 
 
 def loo(all_launches, params):
     per = []
-    for i, (name, s, kind) in enumerate(all_launches):
-        target = {k: v for k, v in s.items() if k <= 0}
+    for i, (name, s, kind, day) in enumerate(all_launches):
         others = [x for j, x in enumerate(all_launches) if j != i]
-        q = main.forecast_quantiles(target, [x[1] for x in others], params, kind, [x[2] for x in others])
+        q = forecast_held_out(all_launches[i], others, params)
         b = main.baseline_quantiles(s[0][0])
         rows_m, rows_b = [], []
         for h in range(2, 25):
