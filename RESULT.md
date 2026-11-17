@@ -1,7 +1,9 @@
 # Result
 
-Code commit: `371aaef037526b6d282c57accfc1a75de3f0e8dc` (main.py last changed in `b924498`, and is identical at
-`371aaef`).
+Code commit: `371aaef037526b6d282c57accfc1a75de3f0e8dc` (main.py last changed in `b924498`). Later commits touch
+only RESULT.md and housekeeping (.gitignore, removing stray bytecode), so main.py is identical at the branch head.
+Run on Python 3.14.4 locally (no 3.13 on this machine). The code uses only standard library that behaves the same
+on 3.13.
 
 The cases are the 37 comparable launches. Each is cut at the end of hour 1 of its release day and scored on hours
 2-24, 851 scored hours in all. Losses are the rules' mean pinball loss on the log scale, from the scorer in
