@@ -11,6 +11,7 @@ import re
 import sys
 from datetime import datetime
 
+GTA6_TWITCH_ID = "1867279146"
 LEVELS = (0.05, 0.25, 0.5, 0.75, 0.95)
 Z = (-1.6448536269514722, -0.6744897501960817, 0.0, 0.6744897501960817, 1.6448536269514722)
 
@@ -91,7 +92,8 @@ def unlock_kind(text):
             return "simul"
     if "midnight local" in t or "rolling" in t:
         # consoles rolling but PC/Steam on its own single unlock: a different shape (a global surge at one hour)
-        if re.search(r"\b(pc|steam)\b[^.;]{0,20}(unlock|simultaneous|global|single)", t):
+        t = re.sub(r"\b(no|not on|without)\s+(a\s+)?pc\b|\bpc\s+(later|\d{4})", " ", t)
+        if re.search(r"\b(pc|steam)\b[^.;()]{0,20}(unlock|simultaneous|global|single)", t):
             return "mixed"
         return "rolling"
     return None
@@ -173,6 +175,8 @@ def load_analogs(case):
 
 def case_kind(case):
     """The case's own unlock type: from its notes, else from its own pre-release category's note."""
+    if str((case.get("game") or {}).get("twitch_id")) == GTA6_TWITCH_ID:
+        return "rolling"  # the rules: PS5/Xbox only, midnight local country by country, no early access
     k = unlock_kind(case.get("notes"))
     if k is None:
         game_name = (case.get("game") or {}).get("name")

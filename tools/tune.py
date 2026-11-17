@@ -39,16 +39,12 @@ def objective(per, which):
     return {"live": live, "big": big, "all": alll, "roll": roll, "mix": mix}[which]
 
 
-def run():
-    with open(sys.argv[1], encoding="utf-8") as f:
-        case = json.load(f)
-    which = sys.argv[2] if len(sys.argv) > 2 else "mix"
-    L = validate.launches(case)
+def tune(L, which="mix", start=None, sweeps=3, log=print):
     KIND.update({n: k for n, _, k in L})
-    params = dict(validate.main.PARAMS)
+    params = dict(start or validate.main.PARAMS)
     best = objective(validate.loo(L, params), which)
-    print("start %.5f" % best)
-    for sweep in range(3):
+    log("start %.5f" % best)
+    for sweep in range(sweeps):
         improved = False
         for key, values in GRID.items():
             for v in values:
@@ -58,9 +54,17 @@ def run():
                 o = objective(validate.loo(L, trial), which)
                 if o < best - 1e-5:
                     best, params, improved = o, trial, True
-            print("sweep %d %-12s -> %-7s %.5f" % (sweep, key, params[key], best))
+            log("sweep %d %-12s -> %-7s %.5f" % (sweep, key, params[key], best))
         if not improved:
             break
+    return params, best
+
+
+def run():
+    with open(sys.argv[1], encoding="utf-8") as f:
+        case = json.load(f)
+    which = sys.argv[2] if len(sys.argv) > 2 else "mix"
+    params, _ = tune(validate.launches(case), which)
     print(json.dumps(params, sort_keys=True))
 
 
