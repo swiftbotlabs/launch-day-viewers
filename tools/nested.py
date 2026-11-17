@@ -13,7 +13,8 @@ import tune  # noqa: E402
 import validate  # noqa: E402
 
 V1 = {"bw_size": 1.0, "bw_mx": 0.5, "bw_r6": 0.6, "bw_ch": 1.5, "k_in": 1.0, "k_out": 1.0, "center": "mean",
-      "shrink": 1.0, "kind_match": 1.0, "kind_mismatch": 1.0, "floor": 0.10, "floor_slope": 0.01}
+      "shrink": 1.0, "kind_match": 1.0, "kind_mismatch": 1.0, "floor": 0.10, "floor_slope": 0.01,
+      "mom_beta": 0.0, "mom_tau": 3.0}
 
 
 def run():

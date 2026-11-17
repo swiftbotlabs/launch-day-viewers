@@ -26,6 +26,8 @@ PARAMS = {
     "shrink": 1.0,    # multiplies the centre (1 = no shrink toward flat)
     "kind_match": 5.0,  # weight factor for analogs whose unlock type matches the case's
     "kind_mismatch": 0.05,  # weight factor when both types are known and differ (unknown type: factor 1)
+    "mom_beta": 0.5,  # momentum carry into the first hours
+    "mom_tau": 3.0,   # its decay, in hours
     "floor": 0.15,    # minimum log spread at hour 2
     "floor_slope": 0.0,  # extra floor per hour ahead
 }
@@ -73,7 +75,8 @@ def features(s):
     old = [s[k][1] for k in range(-48, -6) if k in s and s[k][1] is not None]
     if c1 is not None and old:
         ch = clip(math.log(max(c1, 1.0) / max(max(old), 1.0)), -2.0, 5.0)
-    return {"size": math.log(h1), "mx": mx, "r6": r6, "ch": ch}
+    mom = clip(math.log(h1 / max(s[-1][0], 1.0)), -1.0, 1.0) if -1 in s else None
+    return {"size": math.log(h1), "mx": mx, "r6": r6, "ch": ch, "mom": mom}
 
 
 def analog_targets(s):
@@ -132,10 +135,15 @@ def forecast_quantiles(target, analogs, p=PARAMS, target_kind=None, analog_kinds
     for i, a in enumerate(analogs):
         fa = features(a)
         fa["kind"] = analog_kinds[i] if analog_kinds else None
-        prepared.append((weight(ft, fa, p), analog_targets(a)))
+        prepared.append((weight(ft, fa, p), analog_targets(a), fa["mom"]))
+    # momentum carry: how much faster (or slower) the case moved into hour 1 than its analogs did
+    mpts = [(w, m) for w, _, m in prepared if m is not None and w > 0]
+    dmom = 0.0
+    if ft["mom"] is not None and mpts and sum(w for w, _ in mpts) > 1e-300:
+        dmom = ft["mom"] - sum(w * m for w, m in mpts) / sum(w for w, _ in mpts)
     out = {}
     for h in range(2, 25):
-        pts = [(w, y[h]) for w, y in prepared if h in y and w > 0]
+        pts = [(w, y[h]) for w, y, _ in prepared if h in y and w > 0]
         sw = sum(w for w, _ in pts)
         if sw <= 1e-300:
             mu, var, neff = 0.0, 0.0, 1.0
@@ -145,6 +153,7 @@ def forecast_quantiles(target, analogs, p=PARAMS, target_kind=None, analog_kinds
             neff = sw * sw / sum(w * w for w, _ in pts)
             mu = weighted_median(pts) if p["center"] == "median" else mean
             mu = p["shrink"] * mu  # pull toward flat (ratio 1) when analogs are few or noisy
+        mu += p["mom_beta"] * math.exp(-(h - 2) / p["mom_tau"]) * dmom
         floor = p["floor"] + p["floor_slope"] * (h - 2)
         s = math.sqrt(var * (1.0 + 1.0 / neff) + floor * floor)
         ks = (p["k_out"], p["k_in"], 0.0, p["k_in"], p["k_out"])
