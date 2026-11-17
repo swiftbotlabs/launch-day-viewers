@@ -55,16 +55,16 @@ def launches(case):
         s = main.series_from_rows(c["hourly"], main.parse_time(c["day_start"]), "from")
         if 0 not in s or sum(1 for h in range(1, 24) if h in s) < 12:
             continue
-        res.append((c["name"], s))
+        res.append((c["name"], s, main.unlock_kind(c.get("unlock"))))
     return res
 
 
 def loo(all_launches, params):
     per = []
-    for i, (name, s) in enumerate(all_launches):
+    for i, (name, s, kind) in enumerate(all_launches):
         target = {k: v for k, v in s.items() if k <= 0}
-        analogs = [a for j, (_, a) in enumerate(all_launches) if j != i]
-        q = main.forecast_quantiles(target, analogs, params)
+        others = [x for j, x in enumerate(all_launches) if j != i]
+        q = main.forecast_quantiles(target, [x[1] for x in others], params, kind, [x[2] for x in others])
         b = main.baseline_quantiles(s[0][0])
         rows_m, rows_b = [], []
         for h in range(2, 25):
@@ -109,3 +109,17 @@ def main_cli():
 
 if __name__ == "__main__":
     main_cli()
+
+
+def level_calibration(per, pick=lambda name, h1: True):
+    """Share of prints below each quantile (an honest forecast: about 0.05, 0.25, 0.5, 0.75, 0.95)."""
+    below = [0] * 5
+    n = 0
+    for name, h1, rows, _ in per:
+        if not pick(name, h1):
+            continue
+        for y, q in rows:
+            n += 1
+            for i in range(5):
+                below[i] += 1 if y < q[i] else 0
+    return [round(b / n, 3) for b in below]

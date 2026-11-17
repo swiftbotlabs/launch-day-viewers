@@ -7,6 +7,7 @@ how much their situation at the end of hour 1 resembles this case's. Standard li
 import json
 import math
 import os
+import re
 import sys
 from datetime import datetime
 
@@ -15,12 +16,17 @@ Z = (-1.6448536269514722, -0.6744897501960817, 0.0, 0.6744897501960817, 1.644853
 
 PARAMS = {
     "bw_size": 1.0,   # kernel bandwidth on ln(hour-1 viewers)
-    "bw_mx": 0.5,     # on ln(h1 / max of the previous 24 h)
-    "bw_r6": 0.6,     # on ln(h1 / mean of the previous 6 h)
-    "bw_ch": 1.5,     # on ln(h1 channels / max channels from 48 h to 7 h before)
-    "k": 1.0,         # spread multiplier
-    "floor": 0.10,    # minimum log spread at hour 2
-    "floor_slope": 0.01,  # extra floor per hour ahead
+    "bw_mx": 99.0,     # on ln(h1 / max of the previous 24 h)
+    "bw_r6": 1.5,     # on ln(h1 / mean of the previous 6 h)
+    "bw_ch": 1.0,     # on ln(h1 channels / max channels from 48 h to 7 h before)
+    "k_in": 0.8,      # spread multiplier for the 25/75 quantiles
+    "k_out": 1.0,     # spread multiplier for the 5/95 quantiles
+    "center": "mean", # weighted mean or weighted median of the analogs' log ratios
+    "shrink": 1.0,    # multiplies the centre (1 = no shrink toward flat)
+    "kind_match": 5.0,  # weight factor for analogs whose unlock type matches the case's
+    "kind_mismatch": 0.05,  # weight factor when both types are known and differ (unknown type: factor 1)
+    "floor": 0.15,    # minimum log spread at hour 2
+    "floor_slope": 0.0,  # extra floor per hour ahead
 }
 
 
@@ -75,22 +81,56 @@ def analog_targets(s):
     return {h: math.log(max(s[h - 1][0], 1.0) / h1) for h in range(2, 25) if (h - 1) in s}
 
 
+def unlock_kind(text):
+    """Coarse unlock type from a free-text unlock note: 'early', 'simul', 'rolling' or None (unknown)."""
+    t = (text or "").lower()
+    if "early access" in t and "no early access" not in t:
+        return "early"
+    if "simultaneous" in t or "single global" in t or "single simultaneous" in t:
+        if "midnight local" not in t:
+            return "simul"
+    if "midnight local" in t or "rolling" in t:
+        # consoles rolling but PC/Steam on its own single unlock: a different shape (a global surge at one hour)
+        if re.search(r"\b(pc|steam)\b[^.;]{0,20}(unlock|simultaneous|global|single)", t):
+            return "mixed"
+        return "rolling"
+    return None
+
+
 def weight(fa, fb, p):
     d2 = ((fa["size"] - fb["size"]) / p["bw_size"]) ** 2
     d2 += ((fa["mx"] - fb["mx"]) / p["bw_mx"]) ** 2
     d2 += ((fa["r6"] - fb["r6"]) / p["bw_r6"]) ** 2
     if fa["ch"] is not None and fb["ch"] is not None:
         d2 += ((fa["ch"] - fb["ch"]) / p["bw_ch"]) ** 2
-    return math.exp(-0.5 * d2)
+    w = math.exp(-0.5 * d2)
+    ka, kb = fa.get("kind"), fb.get("kind")
+    if ka is not None and kb is not None:
+        w *= p["kind_match"] if ka == kb else p["kind_mismatch"]
+    return w
 
 
-def forecast_quantiles(target, analogs, p=PARAMS):
+def weighted_median(pts):
+    pts = sorted(pts, key=lambda t: t[1])
+    half = sum(w for w, _ in pts) / 2.0
+    acc = 0.0
+    for w, y in pts:
+        acc += w
+        if acc >= half:
+            return y
+    return pts[-1][1]
+
+
+def forecast_quantiles(target, analogs, p=PARAMS, target_kind=None, analog_kinds=None):
     """target: series with offsets <= 0; analogs: list of full series. Returns {h: [5 quantiles]}."""
     ft = features(target)
+    ft["kind"] = target_kind
     h1 = max(target[0][0], 1.0)
     prepared = []
-    for a in analogs:
-        prepared.append((weight(ft, features(a), p), analog_targets(a)))
+    for i, a in enumerate(analogs):
+        fa = features(a)
+        fa["kind"] = analog_kinds[i] if analog_kinds else None
+        prepared.append((weight(ft, fa, p), analog_targets(a)))
     out = {}
     for h in range(2, 25):
         pts = [(w, y[h]) for w, y in prepared if h in y and w > 0]
@@ -98,12 +138,15 @@ def forecast_quantiles(target, analogs, p=PARAMS):
         if sw <= 1e-300:
             mu, var, neff = 0.0, 0.0, 1.0
         else:
-            mu = sum(w * y for w, y in pts) / sw
-            var = sum(w * (y - mu) ** 2 for w, y in pts) / sw
+            mean = sum(w * y for w, y in pts) / sw
+            var = sum(w * (y - mean) ** 2 for w, y in pts) / sw
             neff = sw * sw / sum(w * w for w, _ in pts)
+            mu = weighted_median(pts) if p["center"] == "median" else mean
+            mu = p["shrink"] * mu  # pull toward flat (ratio 1) when analogs are few or noisy
         floor = p["floor"] + p["floor_slope"] * (h - 2)
-        s = p["k"] * math.sqrt(var * (1.0 + 1.0 / neff) + floor * floor)
-        out[h] = [h1 * math.exp(mu + s * z) for z in Z]
+        s = math.sqrt(var * (1.0 + 1.0 / neff) + floor * floor)
+        ks = (p["k_out"], p["k_in"], 0.0, p["k_in"], p["k_out"])
+        out[h] = [h1 * math.exp(mu + s * z * k) for z, k in zip(Z, ks)]
     return out
 
 
@@ -114,8 +157,9 @@ def is_launch_analog(c, game_name):
 
 
 def load_analogs(case):
+    """Returns (series list, unlock kinds list) of the comparables usable as release-day analogs."""
     game_name = (case.get("game") or {}).get("name")
-    res = []
+    res, kinds = [], []
     for c in case.get("comparables") or []:
         if not is_launch_analog(c, game_name):
             continue
@@ -123,7 +167,21 @@ def load_analogs(case):
         if 0 not in s or sum(1 for h in range(1, 24) if h in s) < 12:
             continue
         res.append(s)
-    return res
+        kinds.append(unlock_kind(c.get("unlock")))
+    return res, kinds
+
+
+def case_kind(case):
+    """The case's own unlock type: from its notes, else from its own pre-release category's note."""
+    k = unlock_kind(case.get("notes"))
+    if k is None:
+        game_name = (case.get("game") or {}).get("name")
+        for c in case.get("comparables") or []:
+            if not is_launch_analog(c, game_name):
+                text = (c.get("unlock") or "").lower()
+                if "rolling" in text or "midnight local" in text:
+                    k = "rolling"
+    return k
 
 
 def target_series(case):
@@ -160,7 +218,8 @@ def baseline_quantiles(h1):
 
 def run_case(case):
     try:
-        q = forecast_quantiles(target_series(case), load_analogs(case))
+        analogs, kinds = load_analogs(case)
+        q = forecast_quantiles(target_series(case), analogs, PARAMS, case_kind(case), kinds)
     except Exception:  # never leave a case invalid: fall back to the flat forecast
         q = baseline_quantiles(float(case["known"][0]["viewers"]))
     return {"hours": [{"hour": h, "q": clean_row(q[h])} for h in range(2, 25)]}
@@ -173,7 +232,6 @@ def main():
     for n in names:
         with open(os.path.join(in_dir, n), encoding="utf-8") as f:
             case = json.load(f)
-        cid = case.get("id") or n[:-3]
         res = run_case(case)
         with open(os.path.join(out_dir, n[:-3] + ".out"), "w", encoding="utf-8") as f:
             json.dump(res, f, separators=(",", ":"))
