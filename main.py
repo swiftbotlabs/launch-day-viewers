@@ -131,11 +131,15 @@ def forecast_quantiles(target, analogs, p=PARAMS, target_kind=None, analog_kinds
     ft = features(target)
     ft["kind"] = target_kind
     h1 = max(target[0][0], 1.0)
-    prepared = []
-    for i, a in enumerate(analogs):
-        fa = features(a)
+    feats = [features(a) for a in analogs]
+    for i, fa in enumerate(feats):
         fa["kind"] = analog_kinds[i] if analog_kinds else None
-        prepared.append((weight(ft, fa, p), analog_targets(a), fa["mom"]))
+    if feats and p.get("clamp_size", True):
+        # never extrapolate the kernel upward: a case bigger than every analog (GTA VI, likely) is weighted as the
+        # largest one, so the group of the largest launches speaks for it rather than the single nearest one.
+        # (A lower clamp was tried too: leave-one-out showed it only hurt the smallest launch, so there is none.)
+        ft["size"] = min(ft["size"], max(f["size"] for f in feats))
+    prepared = [(weight(ft, fa, p), analog_targets(a), fa["mom"]) for fa, a in zip(feats, analogs)]
     # momentum carry: how much faster (or slower) the case moved into hour 1 than its analogs did
     mpts = [(w, m) for w, _, m in prepared if m is not None and w > 0]
     dmom = 0.0
