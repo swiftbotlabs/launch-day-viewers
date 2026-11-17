@@ -76,6 +76,47 @@ def run_dir(cases):
         shutil.rmtree(tout)
 
 
+def malformed_cases(base):
+    """(file id, raw bytes, expected hour-1 the fallback should use or None) for broken or minimal inputs."""
+    good = json.dumps(base)
+    h1 = base["known"][0]["viewers"]
+    minimal = {"id": "m", "known": [{"hour": 1, "viewers": 50000}]}
+    junk = copy.deepcopy(base)
+    junk["comparables"] = [{"name": "x", "day_start": "not a time", "hourly": [{"from": 3, "viewers": "many"}]}]
+    junk["history_hourly"] = junk["history_hourly"] + [{"from": None, "viewers": "?"}]
+    junk["comparables"] = base["comparables"] + junk["comparables"]  # good analogs plus one broken one
+    bad_known = copy.deepcopy(base)
+    bad_known["known"] = [{"hour": 1, "viewers": "abc"}]
+    nan_known = copy.deepcopy(base)
+    nan_known["known"][0]["viewers"] = float("nan")  # json.dumps writes NaN, which Python's json reads back
+    return [
+        ("a_empty", b"", 1.0),
+        ("b_not_json", b"this is not json {", 1.0),
+        ("c_truncated", good[: len(good) // 3].encode(), None),
+        ("d_array", b"[]", 1.0),
+        ("e_minimal", json.dumps(minimal).encode(), None),
+        ("f_junk_rows", json.dumps(junk).encode(), None),
+        ("g_bad_known", json.dumps(bad_known).encode(), None),
+        ("h_bad_utf8", b'{"known": [{"hour": 1, "viewers": 7000}], \xff\xfe}', 7000.0),
+        ("i_nan", json.dumps(nan_known).encode(), None),
+        ("z_good", good.encode(), None),
+    ]
+
+
+def run_raw(items):
+    tin, tout = tempfile.mkdtemp(), tempfile.mkdtemp()
+    try:
+        for cid, raw, _ in items:
+            with open(os.path.join(tin, cid + ".in"), "wb") as f:
+                f.write(raw)
+        env = dict(os.environ, MAKEFUN_INPUT_DIR=tin, MAKEFUN_OUTPUT_DIR=tout, PYTHONHASHSEED="0")
+        subprocess.run([sys.executable, "-P", "-s", MAIN], env=env, check=True)
+        return {cid: check_out(os.path.join(tout, cid + ".out")) for cid, _, _ in items}
+    finally:
+        shutil.rmtree(tin)
+        shutil.rmtree(tout)
+
+
 def run():
     kit = sys.argv[1]
     practice = []
@@ -97,6 +138,16 @@ def run():
         print("%-40s ok  median ratio h2 %.2f h6 %.2f h12 %.2f h20 %.2f h24 %.2f | 90%% band h20 %.2f-%.2f" % (
             label, row[2][2] / h1, row[6][2] / h1, row[12][2] / h1, row[20][2] / h1, row[24][2] / h1,
             row[20][0] / h1, row[20][4] / h1))
+    items = malformed_cases(base)
+    outs = run_raw(items)
+    for cid, raw, want_h1 in items:
+        med2 = {r["hour"]: r["q"] for r in outs[cid]["hours"]}[2][2]
+        if want_h1 is not None:  # baseline fallback: the hour-2 median is the hour-1 print itself
+            assert abs(med2 - want_h1) < 0.01, (cid, med2, want_h1)
+        print("malformed %-12s -> valid forecast (hour-2 median %.2f)" % (cid, med2))
+    good = run_dir([base])[base["id"]]
+    assert outs["z_good"] == good, "a good case after bad ones must forecast exactly as on its own"
+    print("good case after the malformed ones: identical to its own run")
 
 
 if __name__ == "__main__":

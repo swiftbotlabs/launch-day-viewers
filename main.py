@@ -12,6 +12,7 @@ import sys
 from datetime import datetime
 
 GTA6_TWITCH_ID = "1867279146"
+MIN_ANALOGS = 5  # with fewer usable comparables the flat baseline is the safer forecast
 LEVELS = (0.05, 0.25, 0.5, 0.75, 0.95)
 Z = (-1.6448536269514722, -0.6744897501960817, 0.0, 0.6744897501960817, 1.6448536269514722)
 
@@ -49,16 +50,19 @@ def series_from_rows(rows, day_start, time_key):
     """offset hour -> (viewers, channels or None); several rows in one hour are averaged."""
     acc = {}
     for r in rows:
-        v = r.get("viewers")
-        if v is None:
+        try:  # a malformed row is skipped, never fatal
+            v = _positive(r.get("viewers"))
+            if v is None:
+                continue
+            k = hour_offset(parse_time(r[time_key]), day_start)
+        except Exception:
             continue
-        k = hour_offset(parse_time(r[time_key]), day_start)
         a = acc.setdefault(k, [0.0, 0, 0.0, 0])
-        a[0] += float(v)
+        a[0] += v
         a[1] += 1
-        c = r.get("channels")
+        c = _positive(r.get("channels"))
         if c is not None:
-            a[2] += float(c)
+            a[2] += c
             a[3] += 1
     return {k: (a[0] / a[1], (a[2] / a[3]) if a[3] else None) for k, a in acc.items()}
 
@@ -176,9 +180,12 @@ def load_analogs(case):
     game_name = (case.get("game") or {}).get("name")
     res, kinds = [], []
     for c in case.get("comparables") or []:
-        if not is_launch_analog(c, game_name):
+        try:  # a malformed comparable is skipped, never fatal
+            if not is_launch_analog(c, game_name):
+                continue
+            s = series_from_rows(c.get("hourly") or [], parse_time(c["day_start"]), "from")
+        except Exception:
             continue
-        s = series_from_rows(c.get("hourly") or [], parse_time(c["day_start"]), "from")
         if 0 not in s or sum(1 for h in range(1, 24) if h in s) < 12:
             continue
         res.append(s)
@@ -209,8 +216,9 @@ def target_series(case):
     else:
         s = series_from_rows(case.get("history") or [], ds, "at")
     s = {k: v for k, v in s.items() if k < 0}
-    k1 = case["known"][0]
-    s[0] = (max(float(k1["viewers"]), 1.0), k1.get("channels"))
+    k1 = case["known"][0] if isinstance(case.get("known"), list) and case["known"] else {}
+    c1 = _positive(k1.get("channels")) if isinstance(k1, dict) else None
+    s[0] = (hour1_print(case), c1)
     return s
 
 
@@ -233,13 +241,88 @@ def baseline_quantiles(h1):
     return {h: [h1 * math.exp(z * 0.15 * math.sqrt(h - 1)) for z in Z] for h in range(2, 25)}
 
 
+def _positive(x):
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return None
+    return v if math.isfinite(v) and v >= 0 else None
+
+
+def hour1_print(case, raw=""):
+    """Hour 1's print from whatever the case holds (known row, else last history point, else the raw text), else 1."""
+    if isinstance(case, dict):
+        known = case.get("known")
+        if isinstance(known, list):
+            for r in known:
+                if isinstance(r, dict) and r.get("hour", 1) == 1 and _positive(r.get("viewers")) is not None:
+                    return max(_positive(r["viewers"]), 1.0)
+        for key in ("history_hourly", "history"):
+            rows = case.get(key)
+            if isinstance(rows, list):
+                for r in reversed(rows):
+                    if isinstance(r, dict) and _positive(r.get("viewers")) is not None:
+                        return max(_positive(r["viewers"]), 1.0)
+    m = re.search(r'"known"\s*:\s*\[\s*\{[^}]*?"viewers"\s*:\s*([0-9]+(?:\.[0-9]+)?)', raw or "")
+    if m and _positive(m.group(1)) is not None:
+        return max(float(m.group(1)), 1.0)
+    return 1.0
+
+
+def baseline_result(h1):
+    q = baseline_quantiles(h1)
+    return {"hours": [{"hour": h, "q": clean_row(q[h])} for h in range(2, 25)]}
+
+
+def valid_result(res):
+    """The rules' shape: 23 rows, hours 2..24 once each, five finite quantiles in (0, 1e9], non-decreasing."""
+    try:
+        rows = res["hours"]
+        if list(res.keys()) != ["hours"] or len(rows) != 23:
+            return False
+        if sorted(r["hour"] for r in rows) != list(range(2, 25)):
+            return False
+        for r in rows:
+            q = r["q"]
+            if set(r.keys()) != {"hour", "q"} or len(q) != 5:
+                return False
+            prev = 0.0
+            for x in q:
+                if not (isinstance(x, (int, float)) and math.isfinite(x) and 0 < x <= 1e9 and x >= prev):
+                    return False
+                prev = x
+        return len(json.dumps(res, separators=(",", ":"))) <= 65536
+    except Exception:
+        return False
+
+
 def run_case(case):
     try:
         analogs, kinds = load_analogs(case)
+        if len(analogs) < MIN_ANALOGS:
+            raise ValueError("too few usable analogs")
         q = forecast_quantiles(target_series(case), analogs, PARAMS, case_kind(case), kinds)
+        res = {"hours": [{"hour": h, "q": clean_row(q[h])} for h in range(2, 25)]}
     except Exception:  # never leave a case invalid: fall back to the flat forecast
-        q = baseline_quantiles(float(case["known"][0]["viewers"]))
-    return {"hours": [{"hour": h, "q": clean_row(q[h])} for h in range(2, 25)]}
+        res = None
+    if res is None or not valid_result(res):
+        res = baseline_result(hour1_print(case))
+    return res
+
+
+def forecast_file(path):
+    """Forecast for one input file; whatever goes wrong (unreadable, not JSON, odd shape), a valid forecast."""
+    raw = ""
+    try:
+        with open(path, "rb") as f:
+            raw = f.read().decode("utf-8", errors="replace")
+        case = json.loads(raw)
+        res = run_case(case)
+    except Exception:
+        res = None
+    if res is None or not valid_result(res):
+        res = baseline_result(hour1_print(None, raw))
+    return res
 
 
 def main():
@@ -247,11 +330,15 @@ def main():
     out_dir = os.environ.get("MAKEFUN_OUTPUT_DIR") or "/output/"
     names = sorted(n for n in os.listdir(in_dir) if n.endswith(".in"))
     for n in names:
-        with open(os.path.join(in_dir, n), encoding="utf-8") as f:
-            case = json.load(f)
-        res = run_case(case)
-        with open(os.path.join(out_dir, n[:-3] + ".out"), "w", encoding="utf-8") as f:
-            json.dump(res, f, separators=(",", ":"))
+        try:
+            res = forecast_file(os.path.join(in_dir, n))
+        except Exception:
+            res = baseline_result(1.0)
+        try:
+            with open(os.path.join(out_dir, n[:-3] + ".out"), "w", encoding="utf-8") as f:
+                json.dump(res, f, separators=(",", ":"))
+        except Exception:  # one case's write failing must not stop the others
+            continue
     return 0
 
 

@@ -1,6 +1,8 @@
 # GTA VI launch-day Twitch viewers: analog-ensemble forecast
 
-[![make.fun competition](https://make.fun/badge/gta6-twitch-ccu-forecast-01.svg)](https://make.fun)
+[![make.fun · gta6-twitch-ccu-forecast-01](https://make.fun/badge/gta6-twitch-ccu-forecast-01.svg)](https://make.fun/bounty/gta6-twitch-ccu-forecast-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-twitch-ccu-forecast-01)
+[![rank](https://make.fun/badge/gta6-twitch-ccu-forecast-01/swiftbotlabs/launch-day-viewers/rank.svg)](https://make.fun/bounty/gta6-twitch-ccu-forecast-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=gta6-twitch-ccu-forecast-01)
+[![reward](https://make.fun/badge/gta6-twitch-ccu-forecast-01/swiftbotlabs/launch-day-viewers/reward.svg)](https://make.fun/bounty/gta6-twitch-ccu-forecast-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-twitch-ccu-forecast-01)
 
 This is an entry for the make.fun contest *Forecast GTA VI's launch-day Twitch viewers hour by hour*. `main.py` uses
 Python 3.13 and the standard library only. It needs no network, gives the same output on every run, and takes about
