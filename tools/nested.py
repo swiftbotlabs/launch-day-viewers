@@ -16,7 +16,7 @@ V1 = {"bw_size": 1.0, "bw_mx": 0.5, "bw_r6": 0.6, "bw_ch": 1.5, "k_in": 1.0, "k_
       "shrink": 1.0, "kind_match": 1.0, "kind_mismatch": 1.0, "floor": 0.10, "floor_slope": 0.01,
       "mom_beta": 0.0, "mom_tau": 3.0,
       "dst_align": False, "dst_mode": "full", "min_neff": 0.0, "pool_infl": 0.0,
-      "var_own": True}
+      "var_own": True, "thin_neff": 4.0, "thin_floor": 0.0, "thin_kout": 1.0, "mom_cap": 99.0}
 
 
 def run():

@@ -37,6 +37,7 @@ PARAMS = {
     "var_own": True,  # spread from the analogs' unshifted days  # "full" shift / "targets" only / "blend" (mean of own and shifted hour)
     "thin_neff": 4.0,   # below this many effective analogs ...
     "thin_floor": 0.0,  # ... the minimum spread is at least this (0 = off; 0.25 tested)
+    "thin_kout": 1.15,  # ... and the 5/95% quantiles are this much wider (validated: 1.15)
     "floor": 0.15,    # minimum log spread at hour 2
     "floor_slope": 0.0,  # extra floor per hour ahead
 }
@@ -253,7 +254,10 @@ def forecast_quantiles(target, analogs, p=PARAMS, target_kind=None, analog_kinds
             pool_var = sum((y - pm) ** 2 for y in pool) / len(pool)
         # few effective analogs can agree by chance: add a share of the whole pool's variance, shrinking with n_eff
         s = math.sqrt(var * (1.0 + 1.0 / neff) + floor * floor + p.get("pool_infl", 0.0) * pool_var / neff)
-        ks = (p["k_out"], p["k_in"], 0.0, p["k_in"], p["k_out"])
+        k_out = p["k_out"]
+        if neff < p.get("thin_neff", 0.0):  # few effective analogs: honest tails, the middle untouched
+            k_out *= p.get("thin_kout", 1.0)
+        ks = (k_out, p["k_in"], 0.0, p["k_in"], k_out)
         out[h] = [h1 * math.exp(mu + s * z * k) for z, k in zip(Z, ks)]
     return out
 
