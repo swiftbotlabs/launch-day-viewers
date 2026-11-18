@@ -29,6 +29,8 @@ def score(rows):
         absmed.append(abs(math.log(max(y, 1.0)) - math.log(q[2])))
         cov += 1 if q[0] <= y <= q[4] else 0
     n = len(rows)
+    if n == 0:
+        return (float("nan"), float("nan"), float("nan"))
     return (sum(items) / len(items), 100.0 * (math.exp(sum(absmed) / n) - 1.0), cov / n)
 
 
@@ -92,30 +94,11 @@ def summarize(per, pick=lambda name, h1: True):
     return score(rm), score(rb), len(rm)
 
 
-def main_cli():
-    check_worked_example()
-    print("worked example: OK (0.112545, 19.52%, coverage 1; invalid 0.360659)")
-    with open(sys.argv[1], encoding="utf-8") as f:
-        case = json.load(f)
-    params = dict(main.PARAMS)
-    if len(sys.argv) > 2:
-        params.update(json.loads(sys.argv[2]))
-    L = launches(case)
-    per = loo(L, params)
-    verbose = os.environ.get("VERBOSE")
-    if verbose:
-        for name, h1, a, b in per:
-            m, bb = score(a), score(b)
-            print("  %-34s h1=%8d  model %.3f cov %.2f | base %.3f" % (name[:34], h1, m[0], m[2], bb[0]))
-    for label, pick in (("all launches", lambda n, h: True), ("live at h1 (h1>=10k)", lambda n, h: h >= 10000),
-                        ("big (h1>=100k)", lambda n, h: h >= 100000)):
-        m, b, n = summarize(per, pick)
-        print("%-22s n_hours=%4d  model loss %.4f miss %5.1f%% cov %.3f | baseline loss %.4f miss %5.1f%% cov %.3f"
-              % (label, n, m[0], m[1], m[2], b[0], b[1], b[2]))
+PRACTICE = ("Marvel's Wolverine", "Red Dead Redemption 2", "God of War Ragnar", "Marvel's Spider-Man 2")
 
 
-if __name__ == "__main__":
-    main_cli()
+def is_practice(name):
+    return any(name.startswith(x) for x in PRACTICE)
 
 
 def level_calibration(per, pick=lambda name, h1: True):
@@ -130,3 +113,58 @@ def level_calibration(per, pick=lambda name, h1: True):
             for i in range(5):
                 below[i] += 1 if y < q[i] else 0
     return [round(b / n, 3) for b in below]
+
+
+def pooled_launches(paths):
+    """Launches from every case file's comparables, each name once (the final's h00.in holds all 42, the four
+    practice launches included; a practice case holds 38)."""
+    seen, L = set(), []
+    for path in paths:
+        with open(path, encoding="utf-8") as f:
+            for x in launches(json.load(f)):
+                if x[0] not in seen:
+                    seen.add(x[0])
+                    L.append(x)
+    return L
+
+
+def report(L, params, title):
+    kinds = {x[0]: x[2] for x in L}
+    per = loo(L, params)
+    roll = [n for n in kinds if kinds[n] in ("rolling", "mixed")]
+    print("== %s: %d launches, %d rolling/mixed, %d practice launches" % (
+        title, len(L), len(roll), sum(1 for n in kinds if is_practice(n))))
+    if os.environ.get("VERBOSE"):
+        for name, h1, a, b in per:
+            m, bb = score(a), score(b)
+            print("  %-34s h1=%8d  model %.3f cov %.2f | base %.3f" % (name[:34], h1, m[0], m[2], bb[0]))
+    for label, pick in (("all launches", lambda n, h: True), ("live at h1 (h1>=10k)", lambda n, h: h >= 10000),
+                        ("big (h1>=100k)", lambda n, h: h >= 100000),
+                        ("rolling/mixed unlock", lambda n, h: kinds[n] in ("rolling", "mixed")),
+                        ("practice launches", lambda n, h: is_practice(n))):
+        m, b, n = summarize(per, pick)
+        if n == 0:
+            continue
+        print("%-22s n_hours=%4d  model loss %.4f miss %5.1f%% cov %.3f | baseline loss %.4f miss %5.1f%% cov %.3f"
+              % (label, n, m[0], m[1], m[2], b[0], b[1], b[2]))
+
+
+def main_cli():
+    """usage: validate.py <case.in> [more case files ...] ['{"param": value}']"""
+    check_worked_example()
+    print("worked example: OK (0.112545, 19.52%, coverage 1; invalid 0.360659)")
+    params = dict(main.PARAMS)
+    paths = []
+    for arg in sys.argv[1:]:
+        if arg.lstrip().startswith("{"):
+            params.update(json.loads(arg))
+        else:
+            paths.append(arg)
+    L = pooled_launches(paths)
+    report(L, params, "leave-one-out")
+    if any(is_practice(x[0]) for x in L):
+        report([x for x in L if not is_practice(x[0])], params, "leave-one-out without the practice launches")
+
+
+if __name__ == "__main__":
+    main_cli()
