@@ -38,6 +38,8 @@ PARAMS = {
     "thin_neff": 4.0,   # below this many effective analogs ...
     "thin_floor": 0.0,  # ... the minimum spread is at least this (0 = off; 0.25 tested)
     "thin_kout": 1.15,  # ... and the 5/95% quantiles are this much wider (validated: 1.15)
+    "early_med_h": 0,   # dip guard: weighted-median centre for hours 2..this (0 = off; tested)
+    "lo_widen": 1.0,    # dip guard: 5% quantile widened by this for hours 2-6 (1 = off; tested)
     "floor": 0.15,    # minimum log spread at hour 2
     "floor_slope": 0.0,  # extra floor per hour ahead
 }
@@ -291,7 +293,8 @@ def forecast_quantiles(target, analogs, p=PARAMS, target_kind=None, analog_kinds
                     mo = sum(w * y for w, y in own) / so
                     var = sum(w * (y - mo) ** 2 for w, y in own) / so
             neff = sw * sw / sum(w * w for w, _ in pts)
-            mu = weighted_median(pts) if p["center"] == "median" else mean
+            robust = p["center"] == "median" or h <= p.get("early_med_h", 0)
+            mu = weighted_median(pts) if robust else mean  # dip guard: a robust centre for the early hours
             mu = p["shrink"] * mu  # pull toward flat (ratio 1) when analogs are few or noisy
         mu += p["mom_beta"] * math.exp(-(h - 2) / p["mom_tau"]) * dmom
         floor = p["floor"] + p["floor_slope"] * (h - 2)
@@ -307,7 +310,8 @@ def forecast_quantiles(target, analogs, p=PARAMS, target_kind=None, analog_kinds
         k_out = p["k_out"]
         if neff < p.get("thin_neff", 0.0):  # few effective analogs: honest tails, the middle untouched
             k_out *= p.get("thin_kout", 1.0)
-        ks = (k_out, p["k_in"], 0.0, p["k_in"], k_out)
+        k_lo = k_out * (p.get("lo_widen", 1.0) if h <= 6 else 1.0)  # dip guard: a lower 5% quantile, hours 2-6
+        ks = (k_lo, p["k_in"], 0.0, p["k_in"], k_out)
         out[h] = [h1 * math.exp(mu + s * z * k) for z, k in zip(Z, ks)]
     return out
 
