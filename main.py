@@ -42,6 +42,7 @@ PARAMS = {
     "early_med_h": 0,   # dip guard: weighted-median centre for hours 2..this (0 = off; tested)
     "lo_widen": 1.0,    # dip guard: 5% quantile widened by this for hours 2-6 (1 = off; tested)
     "record_shrink": 0.0,  # record hour 1: weight of the big launches' pooled curve in the centre (0 = off)
+    "early_k": 0.95,    # spread multiplier for hours 2-6 (nested: big launches 0.2043 -> 0.2041)
     "floor": 0.15,    # minimum log spread at hour 2
     "floor_slope": 0.0,  # extra floor per hour ahead
 }
@@ -319,6 +320,8 @@ def forecast_quantiles(target, analogs, p=PARAMS, target_kind=None, analog_kinds
         k_out = p["k_out"]
         if neff < p.get("thin_neff", 0.0):  # few effective analogs: honest tails, the middle untouched
             k_out *= p.get("thin_kout", 1.0)
+        if h <= 6:
+            s *= p.get("early_k", 1.0)  # narrower (or wider) bands for hours 2-6 (1 = off; tested)
         k_lo = k_out * (p.get("lo_widen", 1.0) if h <= 6 else 1.0)  # dip guard: a lower 5% quantile, hours 2-6
         ks = (k_lo, p["k_in"], 0.0, p["k_in"], k_out)
         out[h] = [h1 * math.exp(mu + s * z * k) for z, k in zip(Z, ks)]
