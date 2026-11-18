@@ -29,6 +29,7 @@ PARAMS = {
     "kind_mismatch": 0.05,  # weight factor when both types are known and differ (unknown type: factor 1)
     "mom_beta": 0.5,  # momentum carry into the first hours
     "mom_tau": 3.0,   # its decay, in hours
+    "mom_cap": 0.2,   # cap on the momentum gap the carry acts on (tools/stepwise.py)
     "min_neff": 0.0,  # temper the weights when fewer effective analogs than this carry the forecast
     "pool_infl": 0.0,  # share of the pool's variance added per 1/n_eff
     "dst_align": True,   # align analogs to the case's daylight-saving clock (validated: blend mode)
@@ -217,6 +218,10 @@ def forecast_quantiles(target, analogs, p=PARAMS, target_kind=None, analog_kinds
     dmom = 0.0
     if ft["mom"] is not None and mpts and sum(w for w, _ in mpts) > 1e-300:
         dmom = ft["mom"] - sum(w * m for w, m in mpts) / sum(w for w, _ in mpts)
+        # the carry was learnt on momentum the analogs showed; a step-wise unlock landing inside hour 1 can build far
+        # more (+0.7 to +1 in tools/stepwise.py), and extrapolating it made hours 2-4 overshoot: cap the gap
+        cap = p.get("mom_cap", 99.0)
+        dmom = clip(dmom, -cap, cap)
     out = {}
     for h in range(2, 25):
         pts = [(w, y[h]) for w, y, _, _ in prepared if h in y and w > 0]
