@@ -34,6 +34,8 @@ PARAMS = {
     "dst_align": True,   # align analogs to the case's daylight-saving clock (validated: blend mode)
     "dst_mode": "blend",
     "var_own": True,  # spread from the analogs' unshifted days  # "full" shift / "targets" only / "blend" (mean of own and shifted hour)
+    "thin_neff": 4.0,   # below this many effective analogs ...
+    "thin_floor": 0.0,  # ... the minimum spread is at least this (0 = off; 0.25 tested)
     "floor": 0.15,    # minimum log spread at hour 2
     "floor_slope": 0.0,  # extra floor per hour ahead
 }
@@ -237,6 +239,8 @@ def forecast_quantiles(target, analogs, p=PARAMS, target_kind=None, analog_kinds
             mu = p["shrink"] * mu  # pull toward flat (ratio 1) when analogs are few or noisy
         mu += p["mom_beta"] * math.exp(-(h - 2) / p["mom_tau"]) * dmom
         floor = p["floor"] + p["floor_slope"] * (h - 2)
+        if neff < p.get("thin_neff", 0.0):  # few effective analogs (a record hour 1): a wider minimum spread
+            floor = max(floor, p.get("thin_floor", 0.0))
         pool = [y[h] for _, y, _, _ in prepared if h in y]
         pool_var = 0.0
         if len(pool) > 1:
