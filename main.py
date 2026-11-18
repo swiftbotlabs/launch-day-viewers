@@ -70,24 +70,66 @@ def clip(x, lo, hi):
     return lo if x < lo else hi if x > hi else x
 
 
-def series_from_rows(rows, day_start, time_key):
-    """offset hour -> (viewers, channels or None); several rows in one hour are averaged."""
+WINDOW = (-49, 25)  # the offsets the model reads: features 48 h back (+1 for the daylight shift), hours up to 24
+
+
+def series_from_rows(rows, day_start, time_key, window=None):
+    """offset hour -> (viewers, channels or None); several rows in one hour are averaged.
+
+    Fast path (speed matters: ties go to the faster program): a timestamp of the exact form YYYY-MM-DDTHH:MM:SSZ
+    gives its hour offset from a cached day ordinal, with no datetime object per row; anything else takes the
+    general parser. Both give the same offsets. With a window (lo, hi), only offsets lo <= k < hi are kept, and rows
+    outside it are skipped by a string comparison before any parsing (ISO times sort as strings)."""
     acc = {}
+    lo_s = hi_s = None
+    if window:
+        lo_s = (day_start + timedelta(hours=window[0])).strftime("%Y-%m-%dT%H:%M:%SZ")
+        hi_s = (day_start + timedelta(hours=window[1])).strftime("%Y-%m-%dT%H:%M:%SZ")
+    aligned = day_start.minute == 0 and day_start.second == 0 and day_start.microsecond == 0
+    base = day_start.date().toordinal() * 24 + day_start.hour
+    days = {}
     for r in rows:
         try:  # a malformed row is skipped, never fatal
-            v = _positive(r.get("viewers"))
-            if v is None:
+            if lo_s is not None:
+                ts = r[time_key]
+                if type(ts) is str and len(ts) == 20 and ts[19] == "Z" and (ts < lo_s or ts >= hi_s):
+                    continue
+            v = r.get("viewers")
+            if type(v) is int and v >= 0:
+                v = float(v)
+            else:
+                v = _positive(v)
+                if v is None:
+                    continue
+            ts = r[time_key]
+            k = None
+            if aligned and type(ts) is str and len(ts) == 20 and ts[10] == "T" and ts[19] == "Z" \
+                    and ts[13] == ":" and ts[16] == ":":
+                d = ts[:10]
+                o = days.get(d)
+                if o is None:
+                    o = days[d] = date.fromisoformat(d).toordinal()
+                hh = int(ts[11:13])
+                if 0 <= hh <= 23:
+                    k = o * 24 + hh - base
+            if k is None:
+                k = hour_offset(parse_time(ts), day_start)
+            if window and not (window[0] <= k < window[1]):
                 continue
-            k = hour_offset(parse_time(r[time_key]), day_start)
         except Exception:
             continue
         a = acc.setdefault(k, [0.0, 0, 0.0, 0])
         a[0] += v
         a[1] += 1
-        c = _positive(r.get("channels"))
-        if c is not None:
+        c = r.get("channels")
+        if type(c) is int and c >= 0:
             a[2] += c
             a[3] += 1
+        elif c is not None:
+            c = _positive(c)
+            if c is not None:
+                a[2] += c
+                a[3] += 1
     return {k: (a[0] / a[1], (a[2] / a[3]) if a[3] else None) for k, a in acc.items()}
 
 
@@ -285,7 +327,7 @@ def load_analogs(case):
             if not is_launch_analog(c, game_name):
                 continue
             ds = parse_time(c["day_start"])
-            s = series_from_rows(c.get("hourly") or [], ds, "from")
+            s = series_from_rows(c.get("hourly") or [], ds, "from", WINDOW)
         except Exception:
             continue
         if 0 not in s or sum(1 for h in range(1, 24) if h in s) < 12:
