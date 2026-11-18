@@ -55,14 +55,16 @@ cases cannot be scored.
 - a lower size clamp;
 - a full or timing-only daylight-saving shift;
 - a 0.25 spread floor when n_eff < 4;
-- an explicit US-unlock step at hour 6 (`dst_mode` "step").
+- an explicit US-unlock step at hour 6 (`dst_mode` "step");
+- a dip guard (an early-hours median plus a wider 5% quantile).
 
 RESULT.md has the numbers.
 
 **Caveats:**
 - There are only 37 launches, and 9 of them are rolling or mixed. The final's comparables add the 4 practice
   launches.
-- At a record hour 1 the forecast rests on about 2-3 effective analogs.
+- At a record hour 1 the forecast rests on about 2-3 effective analogs. Its medians and bands still scale with
+  hour 1 at 3-6 million; nothing caps them.
 - Prints in the final are minute means, not SullyGnome's hourly averages.
 
 ## Run
@@ -71,7 +73,8 @@ RESULT.md has the numbers.
     python3 tools/validate.py h00.in               # final case: LOO with and without the 4 practice launches
     python3 tools/nested.py   <kit>/input/p00.in '{"dst_align": true, "dst_mode": "blend", "var_own": true, "mom_cap": 0.2, "thin_kout": 1.15}'
     python3 tools/smoke.py    <kit>/input          # format, synthetic final cases, 9 malformed inputs
-    python3 tools/stress.py   <kit>/input          # record hour 1, 2-5 million
+    python3 tools/stress.py   <kit>/input          # record hour 1, odd histories
+    python3 tools/stress.py   <kit>/input sizes    # hour 1 at 3/4/5/6 million: medians and bands
     python3 tools/stepwise.py <kit>/input          # minute-level region-by-region unlock up to the 01:00Z cut
 
 Data: SullyGnome.com hourly Twitch category averages, from the contest kit. Licence: MIT, © Swift Bot Labs.
