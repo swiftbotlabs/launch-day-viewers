@@ -93,5 +93,34 @@ def run():
                   max(rows[h][4] for h in rows) / 1e6, neff, top))
 
 
-if __name__ == "__main__":
+if __name__ == "__main__" and not (len(sys.argv) > 2 and sys.argv[2] == "sizes"):
     run()
+
+
+def size_table(kit, sizes=(3_000_000, 4_000_000, 5_000_000, 6_000_000)):
+    """Record hour 1 at 3-6 million (above every analog): absolute medians and 5-95% bands at hours 2/6/12/24, and a
+    check that no size clamp caps the median (each quantile / hour 1 must be the same at every size)."""
+    with open(os.path.join(kit, "p02.in"), encoding="utf-8") as f:
+        base = json.load(f)
+    ds = main.parse_time(base["day_start"])
+    shape = {int((main.parse_time(r["from"]) - ds).total_seconds() // 3600): r["viewers"]
+             for r in base["history_hourly"]}
+    h1_base = base["known"][0]["viewers"]
+    ratios = []
+    for h1 in sizes:
+        sc = h1 / h1_base
+        case = with_history(base, h1, lambda k, sc=sc: shape.get(k, shape[-1]) * sc)
+        res = main.run_case(case)
+        assert main.valid_result(res)
+        rows = {r["hour"]: r["q"] for r in res["hours"]}
+        ratios.append([round(rows[h][i] / h1, 4) for h in (2, 6, 12, 24) for i in (0, 2, 4)])
+        print("h1 %.0fM: " % (h1 / 1e6) + " | ".join(
+            "h%d median %.2fM (5-95%% %.2f-%.2fM)" % (h, rows[h][2] / 1e6, rows[h][0] / 1e6, rows[h][4] / 1e6)
+            for h in (2, 6, 12, 24)))
+    same = all(r == ratios[0] for r in ratios)
+    print("quantile / hour-1 ratios identical at every size (median scales with hour 1, not capped): %s" % same)
+    return same
+
+
+if __name__ == "__main__" and len(sys.argv) > 2 and sys.argv[2] == "sizes":
+    size_table(sys.argv[1])
