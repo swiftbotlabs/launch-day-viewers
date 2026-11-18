@@ -114,6 +114,14 @@ def analog_targets(s, shift=0, mode="full"):
     base = {h: math.log(max(s[h - 1][0], 1.0) / h1) for h in range(2, 25) if (h - 1) in s}
     if not shift:
         return base
+    if mode == "step":
+        # explicit US-east unlock step: the case's US hour is 6 in winter time (05:00Z) and 5 in summer (04:00Z).
+        # Before it the analog's own pre-US hours are used (its last pre-US level held); from it on, the analog's
+        # post-US hours, so the analog's US jump lands exactly on the case's US hour.
+        us_case = 6 if shift > 0 else 5
+        us_an = us_case - shift
+        src = {h: (min(h, us_an - 1) if h < us_case else h - us_case + us_an) for h in range(2, 25)}
+        return {h: math.log(max(s[k - 1][0], 1.0) / h1) for h, k in src.items() if (k - 1) in s}
     moved = {h: math.log(max(s[h - 1 - shift][0], 1.0) / h1) for h in range(2, 25) if (h - 1 - shift) in s}
     if mode == "targets":
         return moved
