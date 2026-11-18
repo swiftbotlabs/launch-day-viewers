@@ -27,7 +27,7 @@ All of them are aligned to 00:00 UTC of their release date.
    0.5·e^−(h−2)/3 · (the case's ln(h1/h0) minus the analogs'), with that gap capped at ±0.2.
 4. **Spread:** √(var·(1+1/n_eff) + 0.15²), measured on the analogs' unshifted days, ×0.8 for the 25/75% quantiles
    and ×1.0 for the 5/95% ones. When fewer than 4 effective analogs remain (a record hour 1), the 5/95% quantiles
-   are widened ×1.15.
+   are widened ×1.15. For hours 2-6 the spread is ×0.95.
 5. **Speed:** only the hours the model reads (48 h before the cut to the day's end) are parsed, through a fast
    ISO-hour path.
 6. **Fault isolation:** each file gets its own try/except. A bad or unusable case (fewer than 5 analogs) gets the
@@ -43,10 +43,10 @@ cases cannot be scored.
 
 | subset (hours) | LOO | nested LOO | baseline | 90% coverage (LOO / nested / baseline) |
 |---|---|---|---|---|
-| all 37 launches (851) | **0.3533** | 0.3675 | 0.9296 | 0.898 / 0.878 / 0.624 |
-| live at hour 1, h1 ≥ 10k (644) | **0.2238** | 0.2330 | 0.3508 | 0.911 / 0.901 / 0.766 |
-| big, h1 ≥ 100k (368) | **0.1964** | 0.2043 | 0.2611 | 0.927 / 0.913 / 0.837 |
-| rolling or mixed unlock (207) | **0.2397** | 0.2672 | 0.3977 | 0.879 / 0.879 / 0.758 |
+| all 37 launches (851) | **0.3535** | 0.3673 | 0.9296 | 0.894 / 0.882 / 0.624 |
+| live at hour 1, h1 ≥ 10k (644) | **0.2239** | 0.2329 | 0.3508 | 0.908 / 0.901 / 0.766 |
+| big, h1 ≥ 100k (368) | **0.1964** | 0.2041 | 0.2611 | 0.924 / 0.913 / 0.837 |
+| rolling or mixed unlock (207) | **0.2398** | 0.2668 | 0.3977 | 0.879 / 0.884 / 0.758 |
 
 **Tried and not adopted**, because LOO or nested LOO got worse:
 - softer unlock weights;
@@ -56,7 +56,8 @@ cases cannot be scored.
 - a full or timing-only daylight-saving shift;
 - a 0.25 spread floor when n_eff < 4;
 - an explicit US-unlock step at hour 6 (`dst_mode` "step");
-- a dip guard (an early-hours median plus a wider 5% quantile).
+- a dip guard (an early-hours median plus a wider 5% quantile);
+- shrinking a record hour 1 toward the big launches' pooled curve.
 
 RESULT.md has the numbers.
 
@@ -71,10 +72,15 @@ RESULT.md has the numbers.
 
     python3 tools/validate.py <kit>/input/p00.in   # scorer check + LOO; several case files pool their launches
     python3 tools/validate.py h00.in               # final case: LOO with and without the 4 practice launches
-    python3 tools/nested.py   <kit>/input/p00.in '{"dst_align": true, "dst_mode": "blend", "var_own": true, "mom_cap": 0.2, "thin_kout": 1.15}'
+    python3 tools/nested.py   <kit>/input/p00.in '{"dst_align": true, "dst_mode": "blend", "var_own": true, "mom_cap": 0.2, "thin_kout": 1.15, "early_k": 0.95}'
     python3 tools/smoke.py    <kit>/input          # format, synthetic final cases, 9 malformed inputs
     python3 tools/stress.py   <kit>/input          # record hour 1, odd histories
     python3 tools/stress.py   <kit>/input sizes    # hour 1 at 3/4/5/6 million: medians and bands
     python3 tools/stepwise.py <kit>/input          # minute-level region-by-region unlock up to the 01:00Z cut
+
+## Provenance
+
+Repository creation date (field `created_at`): https://api.github.com/repos/swiftbotlabs/launch-day-viewers.
+The session transcript is uploaded with the entry, as the contest requires.
 
 Data: SullyGnome.com hourly Twitch category averages, from the contest kit. Licence: MIT, © Swift Bot Labs.
