@@ -12,6 +12,7 @@ import sys
 from datetime import date, datetime, timedelta
 
 GTA6_TWITCH_ID = "1867279146"
+BIG_SIZE = math.log(100_000)  # a "big launch": hour 1 of 100k viewers or more
 MIN_ANALOGS = 5  # with fewer usable comparables the flat baseline is the safer forecast
 LEVELS = (0.05, 0.25, 0.5, 0.75, 0.95)
 Z = (-1.6448536269514722, -0.6744897501960817, 0.0, 0.6744897501960817, 1.6448536269514722)
@@ -40,6 +41,7 @@ PARAMS = {
     "thin_kout": 1.15,  # ... and the 5/95% quantiles are this much wider (validated: 1.15)
     "early_med_h": 0,   # dip guard: weighted-median centre for hours 2..this (0 = off; tested)
     "lo_widen": 1.0,    # dip guard: 5% quantile widened by this for hours 2-6 (1 = off; tested)
+    "record_shrink": 0.0,  # record hour 1: weight of the big launches' pooled curve in the centre (0 = off)
     "floor": 0.15,    # minimum log spread at hour 2
     "floor_slope": 0.0,  # extra floor per hour ahead
 }
@@ -252,12 +254,14 @@ def forecast_quantiles(target, analogs, p=PARAMS, target_kind=None, analog_kinds
     ft["kind"] = target_kind
     h1 = max(target[0][0], 1.0)
     feats = [features(a) for a in analogs]
+    record = False
     for i, fa in enumerate(feats):
         fa["kind"] = analog_kinds[i]
     if feats and p.get("clamp_size", True):
         # never extrapolate the kernel upward: a case bigger than every analog (GTA VI, likely) is weighted as the
         # largest one, so the group of the largest launches speaks for it rather than the single nearest one.
         # (A lower clamp was tried too: leave-one-out showed it only hurt the smallest launch, so there is none.)
+        record = ft["size"] > max(f["size"] for f in feats)
         ft["size"] = min(ft["size"], max(f["size"] for f in feats))
     ws = temper([weight(ft, fa, p) for fa in feats], p.get("min_neff", 0.0))
     tshift = [0] * len(analogs)
@@ -296,6 +300,11 @@ def forecast_quantiles(target, analogs, p=PARAMS, target_kind=None, analog_kinds
             robust = p["center"] == "median" or h <= p.get("early_med_h", 0)
             mu = weighted_median(pts) if robust else mean  # dip guard: a robust centre for the early hours
             mu = p["shrink"] * mu  # pull toward flat (ratio 1) when analogs are few or noisy
+            lam = p.get("record_shrink", 0.0)
+            if record and lam > 0:  # record hour 1: lean toward the pooled curve of the big launches
+                big = [y[h] for (_, y, _, _), fa in zip(prepared, feats) if h in y and fa["size"] >= BIG_SIZE]
+                if big:
+                    mu = (1.0 - lam) * mu + lam * sum(big) / len(big)
         mu += p["mom_beta"] * math.exp(-(h - 2) / p["mom_tau"]) * dmom
         floor = p["floor"] + p["floor_slope"] * (h - 2)
         if neff < p.get("thin_neff", 0.0):  # few effective analogs (a record hour 1): a wider minimum spread
